@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GD Patcher</title>
+    <style>
+        @import url("https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,100..900;1,100..900&display=swap");
+        @import url("https://fonts.googleapis.com/css2?family=Google+Sans+Code:ital,wght,MONO@0,300..800,1;1,300..800,1&display=swap");
+
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #11111b;
+            scrollbar-color: #949aaf transparent;
+        }
+
+        body, button, input {
+            font-family: "Roboto", Arial, Helvetica, sans-serif;
+            
+        }
+
+        h1, p {
+            color: #cdd6f4;
+        }
+
+        #log {
+            width: 60vw;
+            height: 50vh;
+            background-color: #1e1e2e;
+            border-radius: 10px;
+            font-size: 14px;
+            font-family: "Google Sans Code", Arial, Helvetica, sans-serif;
+            padding: 15px;
+            white-space: pre-wrap;
+            overflow: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>GD Patcher</h1>
+    <p>This tool patches GeometryDash.exe to use your own API instead of RobTop's. Useful for a GDPS.</p>
+
+    <input id="file" type="file"/>
+    <input id="replacement" placeholder="https://your-gdps.com"/>
+    <button id="patch" disabled>Patch</button>
+
+    <p id="log"></p>
+
+    <button id="download" disabled>Download patched exe</button>
+
+    <script>
+        const input = document.getElementById("file");
+        const replacementInput = document.getElementById("replacement");
+        const patchButton = document.getElementById("patch");
+        const downloadButton = document.getElementById("download");
+        const logBox = document.getElementById("log");
+
+        // logging
+
+        const rawLog = [];
+        const log = new Proxy(rawLog, {
+            set(target, property, value, receiver) {
+                const success = Reflect.set(target, property, value, receiver);
+
+                if (success && property !== "length") {
+                    logBox.append(`${value}\n`);
+                    logBox.scrollTop = logBox.scrollHeight;
+                }
+
+                return success;
+            }
+        });
+
+        // replacement box stuff
+
+        replacementInput.value = localStorage.getItem("replacement");
+        replacementInput.addEventListener("change", () => localStorage.setItem("replacement", replacementInput.value));
+
+        // upload handler
+
+        let file;
+
+        input.addEventListener("change", () => {
+            const uploadedFile = input.files[0];
+
+            if ((uploadedFile) && (uploadedFile.type == "application/x-msdownload")) {
+                patchButton.disabled = false;
+                downloadButton.disabled = true;
+                file = uploadedFile;
+            } else {
+                input.value = "";
+                patchButton.disabled = true;
+                alert("Please upload a valid GeometryDash.exe");
+            }
+        });
+
+        // patcher
+
+        let patchedBlob;
+
+        patchButton.addEventListener("click", async () => {
+            patchButton.disabled = true;
+            downloadButton.disabled = true;
+            rawLog.length = 0;
+            logBox.textContent = "";
+
+            const search = "https://www.boomlings.com/database";
+            const end = ".php";
+            const replacement = replacementInput.value; // max is 34
+
+            const exclusions = [
+                "accountManagement.php",
+                "lostusername.php",
+                "lostpassword.php",
+            ];
+
+            const bytes = new Uint8Array(await file.arrayBuffer());
+
+            const toBytes = (s) => Uint8Array.from(s, (c) => c.charCodeAt(0));
+            const toStr = (b) => String.fromCharCode(...b);
+
+            const find = (needle, from) => {
+                outer: for (let i = from; i <= bytes.length - needle.length; i++) {
+                    for (let j = 0; j < needle.length; j++) {
+                        if (bytes[i + j] !== needle[j]) continue outer;
+                    }
+                    return i;
+                }
+                return -1;
+            };
+
+            const searchB = toBytes(search);
+            const endB = toBytes(end);
+            let pos = 0;
+            let count = 0;
+
+            while ((pos = find(searchB, pos)) !== -1) {
+                const endIdx = find(endB, pos + searchB.length);
+                if (endIdx === -1) break;
+
+                const stop = endIdx + endB.length;
+                const originalLength = stop - pos;
+                const original = toStr(bytes.subarray(pos, stop));
+                const middle = toStr(bytes.subarray(pos + searchB.length, endIdx));
+
+                if (exclusions.some((name) => original.endsWith("/" + name))) {
+                    log.push(`0x${pos.toString(16)}: Skipping exclusion ${original}`);
+                    pos = stop;
+                    continue;
+                }
+
+                let newStr = replacement + middle + end;
+
+                if (newStr.length > originalLength) {
+                    log.push("The replacement string is too long, please use a shorter one.");
+                    return;
+                }
+
+                newStr = newStr.padEnd(originalLength, ".");
+
+                bytes.set(toBytes(newStr), pos);
+                log.push(`0x${pos.toString(16)}: ${original} \u{2192} ${newStr.replace(/\.+$/, "")}`);
+
+                count++;
+                pos = stop;
+            }
+
+            log.push(`\u{2713} Done patching ${count} strings.`);
+
+            patchedBlob = new Blob([bytes], { type: "application/octet-stream" });
+
+            downloadButton.disabled = false;
+        });
+
+        downloadButton.addEventListener("click", () => {
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(patchedBlob);
+            a.download = file.name;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        });
+    </script>
+</body>
+</html>
