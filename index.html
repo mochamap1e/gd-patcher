@@ -18,7 +18,6 @@
 
         body, button, input {
             font-family: "Roboto", Arial, Helvetica, sans-serif;
-            
         }
 
         h1, p {
@@ -42,7 +41,7 @@
     <h1>GD Patcher</h1>
     <p>This tool patches GeometryDash.exe to use your own API instead of RobTop's. Useful for a GDPS.</p>
 
-    <input id="file" type="file"/>
+    <input id="file" type="file" accept=".exe"/>
     <input id="replacement" placeholder="https://your-gdps.com"/>
     <button id="patch" disabled>Patch</button>
 
@@ -75,106 +74,126 @@
 
         // replacement box stuff
 
-        replacementInput.value = localStorage.getItem("replacement");
+        replacementInput.value = localStorage.getItem("replacement") || "";
         replacementInput.addEventListener("change", () => localStorage.setItem("replacement", replacementInput.value));
 
         // upload handler
 
         let file;
+        let patchedBlob;
 
         input.addEventListener("change", () => {
             const uploadedFile = input.files[0];
 
-            if ((uploadedFile) && (uploadedFile.type == "application/x-msdownload")) {
+            const looksLikeExe = uploadedFile && (
+                uploadedFile.name.toLowerCase().endsWith(".exe") ||
+                uploadedFile.type == "application/x-msdownload"
+            );
+
+            if (looksLikeExe) {
                 patchButton.disabled = false;
                 downloadButton.disabled = true;
+                patchedBlob = null;
                 file = uploadedFile;
             } else {
                 input.value = "";
+                file = null;
                 patchButton.disabled = true;
+                downloadButton.disabled = true;
                 alert("Please upload a valid GeometryDash.exe");
             }
         });
 
         // patcher
 
-        let patchedBlob;
-
         patchButton.addEventListener("click", async () => {
             patchButton.disabled = true;
             downloadButton.disabled = true;
+            patchedBlob = null;
             rawLog.length = 0;
             logBox.textContent = "";
 
-            const search = "https://www.boomlings.com/database";
-            const end = ".php";
-            const replacement = replacementInput.value; // max is 34
+            try {
+                const search = "https://www.boomlings.com/database";
+                const end = ".php";
+                const replacement = replacementInput.value.trim();
 
-            const exclusions = [
-                "accountManagement.php",
-                "lostusername.php",
-                "lostpassword.php",
-            ];
-
-            const bytes = new Uint8Array(await file.arrayBuffer());
-
-            const toBytes = (s) => Uint8Array.from(s, (c) => c.charCodeAt(0));
-            const toStr = (b) => String.fromCharCode(...b);
-
-            const find = (needle, from) => {
-                outer: for (let i = from; i <= bytes.length - needle.length; i++) {
-                    for (let j = 0; j < needle.length; j++) {
-                        if (bytes[i + j] !== needle[j]) continue outer;
-                    }
-                    return i;
-                }
-                return -1;
-            };
-
-            const searchB = toBytes(search);
-            const endB = toBytes(end);
-            let pos = 0;
-            let count = 0;
-
-            while ((pos = find(searchB, pos)) !== -1) {
-                const endIdx = find(endB, pos + searchB.length);
-                if (endIdx === -1) break;
-
-                const stop = endIdx + endB.length;
-                const originalLength = stop - pos;
-                const original = toStr(bytes.subarray(pos, stop));
-                const middle = toStr(bytes.subarray(pos + searchB.length, endIdx));
-
-                if (exclusions.some((name) => original.endsWith("/" + name))) {
-                    log.push(`0x${pos.toString(16)}: Skipping exclusion ${original}`);
-                    pos = stop;
-                    continue;
-                }
-
-                let newStr = replacement + middle + end;
-
-                if (newStr.length > originalLength) {
-                    log.push("The replacement string is too long, please use a shorter one.");
+                if (!replacement) {
+                    log.push("Please enter your server URL first (e.g. https://your-gdps.com).");
                     return;
                 }
 
-                newStr = newStr.padEnd(originalLength, "\0");
+                const bytes = new Uint8Array(await file.arrayBuffer());
 
-                bytes.set(toBytes(newStr), pos);
-                log.push(`0x${pos.toString(16)}: ${original} \u{2192} ${newStr.replace(/\0+$/, "")}`);
+                const toBytes = (s) => Uint8Array.from(s, (c) => c.charCodeAt(0));
+                const toStr = (b) => {
+                    let s = "";
+                    for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+                    return s;
+                };
 
-                count++;
-                pos = stop;
+                const find = (needle, from) => {
+                    outer: for (let i = from; i <= bytes.length - needle.length; i++) {
+                        for (let j = 0; j < needle.length; j++) {
+                            if (bytes[i + j] !== needle[j]) continue outer;
+                        }
+                        return i;
+                    }
+                    return -1;
+                };
+
+                const searchB = toBytes(search);
+                const endB = toBytes(end);
+                let pos = 0;
+                let count = 0;
+
+                const patches = [];
+
+                while ((pos = find(searchB, pos)) !== -1) {
+                    const endIdx = find(endB, pos + searchB.length);
+                    if (endIdx === -1) break;
+
+                    const stop = endIdx + endB.length;
+                    const originalLength = stop - pos;
+                    const original = toStr(bytes.subarray(pos, stop));
+                    const middle = toStr(bytes.subarray(pos + searchB.length, endIdx));
+
+                    const newStr = replacement + middle + end;
+
+                    if (newStr.length > originalLength) {
+                        log.push(`0x${pos.toString(16)}: "${newStr}" is ${newStr.length - originalLength} character(s) too long for this slot (${originalLength} max).`);
+                        log.push("The replacement string is too long, please use a shorter one.");
+                        return;
+                    }
+
+                    patches.push({ pos, original, newStr, originalLength });
+                    pos = stop;
+                }
+
+                if (patches.length === 0) {
+                    log.push("No matching strings found. This may not be GeometryDash.exe, the version may be unsupported, or the file may already be patched.");
+                    return;
+                }
+
+                for (const { pos, original, newStr, originalLength } of patches) {
+                    bytes.set(toBytes(newStr.padEnd(originalLength, "\0")), pos);
+                    log.push(`0x${pos.toString(16)}: ${original} \u{2192} ${newStr}`);
+                    count++;
+                }
+
+                log.push(`\u{2713} Done patching ${count} strings.`);
+
+                patchedBlob = new Blob([bytes], { type: "application/octet-stream" });
+                downloadButton.disabled = false;
+            } catch (err) {
+                log.push(`Error: ${err.message}`);
+            } finally {
+                patchButton.disabled = false;
             }
-
-            log.push(`\u{2713} Done patching ${count} strings.`);
-
-            patchedBlob = new Blob([bytes], { type: "application/octet-stream" });
-
-            downloadButton.disabled = false;
         });
 
         downloadButton.addEventListener("click", () => {
+            if (!patchedBlob) return;
             const a = document.createElement("a");
             a.href = URL.createObjectURL(patchedBlob);
             a.download = file.name;
