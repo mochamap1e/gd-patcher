@@ -158,10 +158,10 @@
                     return;
                 }
 
-                newStr = newStr.padEnd(originalLength, ".");
+                newStr = newStr.padEnd(originalLength, "\0");
 
                 bytes.set(toBytes(newStr), pos);
-                log.push(`0x${pos.toString(16)}: ${original} \u{2192} ${newStr.replace(/\.+$/, "")}`);
+                log.push(`0x${pos.toString(16)}: ${original} \u{2192} ${newStr.replace(/\0+$/, "")}`);
 
                 count++;
                 pos = stop;
